@@ -1,0 +1,23 @@
+{
+	"version": 0,
+	"dependencies": [
+		{
+			"importpath": "github.com/docker/go-redis-server",
+			"repository": "https://github.com/docker/go-redis-server",
+			"revision": "e4d48d56d17845ed199548a5366406de7231a4b8",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/dotcloud/go-redis-server",
+			"repository": "https://github.com/dotcloud/go-redis-server",
+			"revision": "e4d48d56d17845ed199548a5366406de7231a4b8",
+			"branch": "master"
+		},
+		{
+			"importpath": "github.com/garyburd/redigo",
+			"repository": "https://github.com/garyburd/redigo",
+			"revision": "a47585eaae68b1d14b02940d2af1b9194f3caa9c",
+			"branch": "master"
+		}
+	]
+}
