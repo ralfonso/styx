@@ -8,8 +8,15 @@ import (
 
 func main() {
 
+	localCluster := NewRedisCluster([]string{"192.168.59.103:7000"})
+	remoteCluster := NewRedisCluster([]string{"192.168.59.103:7000"})
+	styxCluster := StyxCluster{
+		LocalCluster:  localCluster,
+		RemoteCluster: remoteCluster,
+	}
+
 	handlerConfig := HandlerConfig{
-		Server: "192.168.59.103:6379",
+		Cluster: styxCluster,
 	}
 
 	handler := NewHandler(handlerConfig)

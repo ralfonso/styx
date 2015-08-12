@@ -18,6 +18,12 @@
 			"repository": "https://github.com/garyburd/redigo",
 			"revision": "a47585eaae68b1d14b02940d2af1b9194f3caa9c",
 			"branch": "master"
+		},
+		{
+			"importpath": "github.com/howeyc/crc16",
+			"repository": "https://github.com/howeyc/crc16",
+			"revision": "1248e9faca2019330687ace86a646774a9e5067e",
+			"branch": "master"
 		}
 	]
 }
