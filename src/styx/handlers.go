@@ -2,29 +2,72 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
 
 	"github.com/garyburd/redigo/redis"
-	"github.com/howeyc/crc16"
+	crc16 "github.com/joaojeronimo/go-crc16"
 )
 
 const (
-	redisSlotMax = 16384
-	maxInt       = int((^uint(0)) >> 1)
+	redisSlotMax uint16 = 16384
+	maxInt              = int((^uint(0)) >> 1)
 )
 
 type HandlerConfig struct {
-	Cluster StyxCluster
+	Cluster                StyxCluster
+	ReplicationWorkerCount int
+}
+
+type ReplayOp struct {
+	handler *Handler
+	cmd     string
+	args    []interface{}
 }
 
 type Handler struct {
-	Cluster StyxCluster
+	Cluster            StyxCluster
+	replicationWorkers ReplicationWorkers
+	replicationQueue   chan ReplayOp
+}
+
+type ReplicationWorkers struct {
+	Cluster      *RedisCluster
+	ShutdownChan chan struct{}
+}
+
+func NewReplicationWorkerPool(poolSize int, cluster *RedisCluster, rQueue chan ReplayOp) ReplicationWorkers {
+	shutdownChan := make(chan struct{}, 1)
+
+	for i := 0; i < poolSize; i++ {
+		go func() {
+			select {
+			case <-shutdownChan:
+				return
+			case replayOp := <-rQueue:
+				key := replayOp.args[0].(string)
+				conn := replayOp.handler.connByKey(key, cluster.Pools, cluster.Slots)
+				log.Printf("replaying op to %s", conn)
+				replayOp.handler.clusterDo(true, 5, conn, replayOp.cmd, replayOp.args...)
+			}
+		}()
+	}
+	return ReplicationWorkers{
+		Cluster:      cluster,
+		ShutdownChan: shutdownChan,
+	}
 }
 
 func NewHandler(config HandlerConfig) *Handler {
-	return &Handler{Cluster: config.Cluster}
+	rQueue := make(chan ReplayOp, config.ReplicationWorkerCount)
+
+	return &Handler{
+		Cluster:            config.Cluster,
+		replicationWorkers: NewReplicationWorkerPool(config.ReplicationWorkerCount, &config.Cluster.RemoteCluster, rQueue),
+		replicationQueue:   rQueue,
+	}
 }
 
 func chooseLeastConns(pools map[string]*redis.Pool) *redis.Pool {
@@ -43,7 +86,8 @@ func chooseLeastConns(pools map[string]*redis.Pool) *redis.Pool {
 }
 
 func keySlot(key string) uint16 {
-	return crc16.ChecksumCCITT([]byte(key)) % redisSlotMax
+	cs := crc16.Crc16([]byte(key))
+	return cs % redisSlotMax
 }
 
 func (h *Handler) connByKey(key string, pools map[string]*redis.Pool, slotCache SlotCache) redis.Conn {
@@ -75,10 +119,26 @@ func parseClusterKeyError(errStr string) (*ClusterKeyError, error) {
 	}, nil
 }
 
-func (h *Handler) clusterDo(conn redis.Conn, cmd string, args ...interface{}) (interface{}, error) {
+func (h *Handler) queueOpForReplication(cmd string, args ...interface{}) {
+	replayOp := ReplayOp{
+		handler: h,
+		cmd:     cmd,
+		args:    args,
+	}
+	// XXX this could block which is why this func is run in a goroutine.
+	// TODO add expiration for replay operations so we don't accumulate forever in case the remote end is lost
+	h.replicationQueue <- replayOp
+}
+
+func (h *Handler) clusterDo(isReplay bool, redirectsAllowed int, conn redis.Conn, cmd string, args ...interface{}) (interface{}, error) {
 	v, err := conn.Do(cmd, args...)
 	if err != nil {
 		if err.Error()[0:3] == "ASK" {
+			if redirectsAllowed == 0 {
+				return nil, errors.New(fmt.Sprintf("exceeded maximum number of Redis cluster redirects: %s", err.Error()))
+			}
+
+			redirectsAllowed -= 1
 			clusterKeyError, err := parseClusterKeyError(err.Error())
 			if err != nil {
 				return nil, err
@@ -88,8 +148,9 @@ func (h *Handler) clusterDo(conn redis.Conn, cmd string, args ...interface{}) (i
 			if pool, ok := h.Cluster.LocalCluster.Pools[clusterKeyError.Host]; ok {
 				conn.Close()
 				conn = pool.Get()
+				defer conn.Close()
 				h.Cluster.LocalCluster.Unlock()
-				return h.clusterDo(conn, cmd, args...)
+				return h.clusterDo(isReplay, redirectsAllowed, conn, cmd, args...)
 			} else {
 				conn.Close()
 				// create the pool
@@ -98,25 +159,32 @@ func (h *Handler) clusterDo(conn redis.Conn, cmd string, args ...interface{}) (i
 				h.Cluster.LocalCluster.Pools[clusterKeyError.Host] = pool
 				h.Cluster.LocalCluster.Unlock()
 				conn = pool.Get()
-				return h.clusterDo(conn, cmd, args...)
+				defer conn.Close()
+				return h.clusterDo(isReplay, redirectsAllowed, conn, cmd, args...)
 			}
 
 			h.Cluster.LocalCluster.Unlock()
 		} else if err.Error()[0:5] == "MOVED" {
+			if redirectsAllowed == 0 {
+				return nil, errors.New(fmt.Sprintf("exceeded maximum number of Redis cluster redirects: %s", err.Error()))
+			}
+
+			redirectsAllowed -= 1
+
 			clusterKeyError, err := parseClusterKeyError(err.Error())
 			if err != nil {
 				return nil, err
 			}
 
 			h.Cluster.LocalCluster.Lock()
-			log.Printf("Caching slot %d to host %s", clusterKeyError.Slot, clusterKeyError.Host)
 			h.Cluster.LocalCluster.Slots[clusterKeyError.Slot] = clusterKeyError.Host
 
 			if pool, ok := h.Cluster.LocalCluster.Pools[clusterKeyError.Host]; ok {
 				conn.Close()
 				conn = pool.Get()
+				defer conn.Close()
 				h.Cluster.LocalCluster.Unlock()
-				return h.clusterDo(conn, cmd, args...)
+				return h.clusterDo(isReplay, redirectsAllowed, conn, cmd, args...)
 			} else {
 				conn.Close()
 				// create the pool
@@ -125,17 +193,20 @@ func (h *Handler) clusterDo(conn redis.Conn, cmd string, args ...interface{}) (i
 				h.Cluster.LocalCluster.Pools[clusterKeyError.Host] = pool
 				h.Cluster.LocalCluster.Unlock()
 				conn = pool.Get()
-				return h.clusterDo(conn, cmd, args...)
+				defer conn.Close()
+				return h.clusterDo(isReplay, redirectsAllowed, conn, cmd, args...)
 			}
 		}
 	}
 
+	if !isReplay {
+		go h.queueOpForReplication(cmd, args...)
+	}
 	return v, err
 }
 
 func (h *Handler) Pfadd(key string, values ...[]byte) (int, error) {
 	conn := h.connByKey(key, h.Cluster.LocalCluster.Pools, h.Cluster.LocalCluster.Slots)
-	defer conn.Close()
 
 	stringValues := make([]interface{}, len(values)+1)
 	stringValues[0] = key
@@ -143,7 +214,8 @@ func (h *Handler) Pfadd(key string, values ...[]byte) (int, error) {
 		stringValues[i] = string(values[i-1])
 	}
 
-	v, err := h.clusterDo(conn, "pfadd", stringValues...)
+	v, err := h.clusterDo(false, 5, conn, "pfadd", stringValues...)
+	conn.Close()
 	if err != nil {
 		return 0, err
 	}
@@ -158,9 +230,9 @@ func (h *Handler) Pfadd(key string, values ...[]byte) (int, error) {
 
 func (h *Handler) Pfcount(key string) (int, error) {
 	conn := h.connByKey(key, h.Cluster.LocalCluster.Pools, h.Cluster.LocalCluster.Slots)
-	defer conn.Close()
 
-	v, err := conn.Do("pfcount", key)
+	v, err := h.clusterDo(false, 5, conn, "pfcount", stringValues...)
+	conn.Close()
 	if err != nil {
 		return 0, err
 	}

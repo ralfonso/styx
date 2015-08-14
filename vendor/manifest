@@ -20,9 +20,9 @@
 			"branch": "master"
 		},
 		{
-			"importpath": "github.com/howeyc/crc16",
-			"repository": "https://github.com/howeyc/crc16",
-			"revision": "1248e9faca2019330687ace86a646774a9e5067e",
+			"importpath": "github.com/joaojeronimo/go-crc16",
+			"repository": "https://github.com/joaojeronimo/go-crc16",
+			"revision": "59bd0194935ecff6f47039ee12efd09ff894a14a",
 			"branch": "master"
 		}
 	]
