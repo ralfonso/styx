@@ -15,12 +15,20 @@ func main() {
 		RemoteCluster: remoteCluster,
 	}
 
+	workerCount := 30
+	redirectionLimit := 5
+
+	// TODO determine a proper queue size
+	replayQueue := make(chan RedisCommand, workerCount*100)
+	clusterClient := NewClusterClient(styxCluster, workerCount, redirectionLimit, replayQueue)
+
 	handlerConfig := HandlerConfig{
-		Cluster:                styxCluster,
-		ReplicationWorkerCount: 10,
+		client: clusterClient,
 	}
 
 	handler := NewHandler(handlerConfig)
+	replayer := NewReplayer(workerCount, remoteCluster, clusterClient, replayQueue)
+	replayer.Start()
 
 	serverConfig := server.DefaultConfig().Host("0.0.0.0").Handler(handler)
 

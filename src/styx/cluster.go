@@ -56,5 +56,6 @@ type StyxCluster struct {
 
 	// these servers are remote/passive to this instance of Styx.
 	// Operations from clients are replayed asynchronously
+	// TODO support multiple remote clusters
 	RemoteCluster RedisCluster
 }
