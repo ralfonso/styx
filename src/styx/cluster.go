@@ -14,8 +14,9 @@ type SlotCache map[uint16]string
 
 type RedisCluster struct {
 	sync.RWMutex
-	Pools map[string]*redis.Pool
-	Slots SlotCache
+	PoolSize int
+	Pools    map[string]*redis.Pool
+	Slots    SlotCache
 }
 
 func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeout, redisMaxIdle, redisMaxActive int) *redis.Pool {
@@ -37,25 +38,26 @@ func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeo
 	}
 }
 
-func NewRedisCluster(hosts []string) RedisCluster {
+func NewRedisCluster(hosts []string, poolSize int) *RedisCluster {
 	pools := make(map[string]*redis.Pool)
 	for _, host := range hosts {
 		log.Printf("creating pool for %s", host)
-		pools[host] = createRedisPool(host, 500, 240, 10, 10)
+		pools[host] = createRedisPool(host, 500, 240, poolSize, poolSize)
 	}
-	return RedisCluster{
-		Pools: pools,
-		Slots: make(SlotCache),
+	return &RedisCluster{
+		PoolSize: poolSize,
+		Pools:    pools,
+		Slots:    make(SlotCache),
 	}
 }
 
 type StyxCluster struct {
 	// these servers are used as the "local active".
 	// operations from clients are synchronous
-	LocalCluster RedisCluster
+	LocalCluster *RedisCluster
 
 	// these servers are remote/passive to this instance of Styx.
 	// Operations from clients are replayed asynchronously
 	// TODO support multiple remote clusters
-	RemoteCluster RedisCluster
+	RemoteCluster *RedisCluster
 }

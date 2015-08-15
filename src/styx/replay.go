@@ -6,19 +6,19 @@ type Replayer struct {
 	workerCount  int
 	workers      []replayWorker
 	client       ClusterClient
-	cluster      RedisCluster
+	cluster      *RedisCluster
 	shutdownChan chan struct{}
 	queue        chan RedisCommand
 }
 
 type replayWorker struct {
 	queue        chan RedisCommand
-	cluster      RedisCluster
 	client       ClusterClient
+	cluster      *RedisCluster
 	shutdownChan chan struct{}
 }
 
-func NewReplayer(workerCount int, cluster RedisCluster, client ClusterClient, replayQueue chan RedisCommand) *Replayer {
+func NewReplayer(workerCount int, cluster *RedisCluster, client ClusterClient, replayQueue chan RedisCommand) *Replayer {
 	shutdownChan := make(chan struct{}, 1)
 
 	return &Replayer{
@@ -54,8 +54,8 @@ func (w replayWorker) Exec() {
 			return
 		case cmd := <-w.queue:
 			key := cmd.args[0].(string)
-			conn := connByKey(key, w.cluster.Slots, w.cluster.Pools)
-			log.Printf("replaying op to %s", conn)
+			conn := connByKey(key, w.cluster)
+			log.Printf("replaying op %s %s", cmd.cmd, cmd.args)
 			w.client.redirectingDo(w.client.redirectionsAllowed, conn, w.cluster, cmd)
 		}
 	}

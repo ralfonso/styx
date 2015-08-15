@@ -8,14 +8,14 @@ import (
 
 func main() {
 
-	localCluster := NewRedisCluster([]string{"server1:7000"})
-	remoteCluster := NewRedisCluster([]string{"server2:7000"})
+	workerCount := 30
+	localCluster := NewRedisCluster([]string{"server1:7000"}, 500)
+	remoteCluster := NewRedisCluster([]string{"server2:7000"}, workerCount)
 	styxCluster := StyxCluster{
 		LocalCluster:  localCluster,
 		RemoteCluster: remoteCluster,
 	}
 
-	workerCount := 30
 	redirectionLimit := 5
 
 	// TODO determine a proper queue size
@@ -36,5 +36,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
 	log.Print(server.ListenAndServe())
 }

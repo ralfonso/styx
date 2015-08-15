@@ -24,10 +24,10 @@ const (
 
 type ClusterClient struct {
 	// The "local" cluster. Writes are synchronous
-	L RedisCluster
+	L *RedisCluster
 
 	// The "remote" cluster. Writes to the local cluster are replayed asyncronously here
-	R RedisCluster
+	R *RedisCluster
 
 	redirectionsAllowed int
 
@@ -87,13 +87,19 @@ func keySlot(key string) uint16 {
 	return cs % redisSlotMax
 }
 
-func connByKey(key string, slotCache SlotCache, pools map[string]*redis.Pool) redis.Conn {
+func connByKey(key string, cluster *RedisCluster) redis.Conn {
 	slot := keySlot(key)
-	if owner, ok := slotCache[slot]; ok {
-		return pools[owner].Get()
-	}
 
-	pool := chooseFewestConns(pools)
+	var pool *redis.Pool
+
+	cluster.RLock()
+	if owner, ok := cluster.Slots[slot]; ok {
+		pool = cluster.Pools[owner]
+	} else {
+		pool = chooseFewestConns(cluster.Pools)
+	}
+	cluster.RUnlock()
+
 	return pool.Get()
 }
 
@@ -143,7 +149,7 @@ func (c *ClusterClient) Do(cmd string, args ...interface{}) (interface{}, error)
 
 	// this method is only used by the external handler, which means we always want to
 	// determine the _local_ shard
-	conn := connByKey(key, c.L.Slots, c.L.Pools)
+	conn := connByKey(key, c.L)
 	v, err := c.redirectingDo(c.redirectionsAllowed, conn, c.L, rCmd)
 	if err == nil && isWriteCommand(rCmd.cmd) {
 		go c.queueOpForReplication(rCmd)
@@ -155,7 +161,6 @@ func (c *ClusterClient) Do(cmd string, args ...interface{}) (interface{}, error)
 func parseRedirection(err error) (redirErr redirectionError, isRedir bool) {
 	errStr := err.Error()
 	isRedir = errStr[0:3] == askErrorStr || errStr[0:5] == movedErrorStr
-	log.Printf("isRedir: %s, errStr: %s", isRedir, errStr)
 	if isRedir {
 		var parseError error
 		redirErr, parseError = _parseRedirection(err.Error())
@@ -167,11 +172,13 @@ func parseRedirection(err error) (redirErr redirectionError, isRedir bool) {
 	return redirErr, isRedir
 }
 
-func (c *ClusterClient) redirectingDo(redirectsAllowed int, conn redis.Conn, cluster RedisCluster, cmd RedisCommand) (interface{}, error) {
+func (c *ClusterClient) redirectingDo(redirectsAllowed int, conn redis.Conn, cluster *RedisCluster, cmd RedisCommand) (interface{}, error) {
 	v, err := conn.Do(cmd.cmd, cmd.args...)
 	if err != nil {
 		redirError, ok := parseRedirection(err)
 		if ok {
+			conn.Close()
+
 			if redirectsAllowed <= 0 {
 				return nil, errors.New(fmt.Sprintf("exceeded maximum number of Redis cluster redirects: %s", err.Error()))
 			}
@@ -180,10 +187,11 @@ func (c *ClusterClient) redirectingDo(redirectsAllowed int, conn redis.Conn, clu
 		}
 	}
 
+	conn.Close()
 	return v, err
 }
 
-func (c *ClusterClient) handleRedirection(redirectsAllowed int, redirError redirectionError, cluster RedisCluster, cmd RedisCommand) (interface{}, error) {
+func (c *ClusterClient) handleRedirection(redirectsAllowed int, redirError redirectionError, cluster *RedisCluster, cmd RedisCommand) (interface{}, error) {
 	// we only cache the slot location for a MOVED
 	if redirError.errType == movedError {
 		cluster.Lock()
@@ -191,21 +199,25 @@ func (c *ClusterClient) handleRedirection(redirectsAllowed int, redirError redir
 		cluster.Unlock()
 	}
 
+	cluster.RLock()
 	if pool, ok := cluster.Pools[redirError.host]; ok {
 		// we have a connection pool for this host
 		conn := pool.Get()
+		cluster.RUnlock()
 		return c.redirectingDo(redirectsAllowed, conn, cluster, cmd)
 	} else {
 		// we need to create a new pool
-		log.Printf("Creating pool for %s", redirError.host)
-		pool := createRedisPool(redirError.host, 500, 240, 10, 10)
+		cluster.RUnlock()
 		cluster.Lock()
+		log.Printf("Creating pool for %s", redirError.host)
+		pool := createRedisPool(redirError.host, 500, 240, cluster.PoolSize, cluster.PoolSize)
 		cluster.Pools[redirError.host] = pool
 		cluster.Unlock()
 		conn := pool.Get()
 		return c.redirectingDo(redirectsAllowed, conn, cluster, cmd)
 	}
 
+	cluster.Unlock()
 	return nil, errors.New("unknown Redis Cluster redirection error")
 }
 
