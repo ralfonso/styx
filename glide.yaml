@@ -1,0 +1,5 @@
+package: main
+import:
+  - package: github.com/ralfonso/go-redis-server
+  - package: github.com/garyburd/redigo
+  - package: github.com/joaojeronimo/go-crc16

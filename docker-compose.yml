@@ -1,0 +1,12 @@
+styx:
+  build: .
+  ports:
+   - "6389:6389"
+  volumes:
+   - .:/go/src/styx
+  links:
+   - redis
+redis1:
+  image: redis
+redis2:
+  image: redis
