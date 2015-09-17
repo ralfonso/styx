@@ -15,11 +15,18 @@ type SlotCache map[uint16]string
 type RedisCluster struct {
 	sync.RWMutex
 	PoolSize int
-	Pools    map[string]*redis.Pool
+	Pools    map[string]Pool
 	Slots    SlotCache
 }
 
-func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeout, redisMaxIdle, redisMaxActive int) *redis.Pool {
+// laaaaame. so we can mock redis.Pool
+type Pool interface {
+	Get() redis.Conn
+	ActiveCount() int
+	Close() error
+}
+
+func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeout, redisMaxIdle, redisMaxActive int) Pool {
 	timeout := time.Duration(redisTimeout) * time.Millisecond
 
 	// TODO add a TestOnBorrow func that periodically checks the health of the connection
@@ -39,7 +46,7 @@ func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeo
 }
 
 func NewRedisCluster(hosts []string, poolSize int) *RedisCluster {
-	pools := make(map[string]*redis.Pool)
+	pools := make(map[string]Pool)
 	for _, host := range hosts {
 		log.Printf("creating pool for %s", host)
 		// XXX remove hardcoded timeout values

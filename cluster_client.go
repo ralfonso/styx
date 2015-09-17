@@ -70,9 +70,9 @@ func NewClusterClient(cluster StyxCluster, replayWorkerCount, redirectsAllowed i
 }
 
 // suuuuuuper basic load balancing. requires a read lock :|
-func chooseFewestConns(pools map[string]*redis.Pool) *redis.Pool {
+func chooseFewestConns(pools map[string]Pool) Pool {
 	leastActive := maxInt
-	var leastActivePool *redis.Pool = nil
+	var leastActivePool Pool = nil
 
 	for _, pool := range pools {
 		active := pool.ActiveCount()
@@ -97,7 +97,7 @@ func keySlot(key string) uint16 {
 func connByKey(key string, cluster *RedisCluster) redis.Conn {
 	slot := keySlot(key)
 
-	var pool *redis.Pool
+	var pool Pool
 
 	cluster.RLock()
 	if owner, ok := cluster.Slots[slot]; ok {
@@ -108,30 +108,6 @@ func connByKey(key string, cluster *RedisCluster) redis.Conn {
 	cluster.RUnlock()
 
 	return pool.Get()
-}
-
-// handle a redirection response from redis
-func _parseRedirection(errStr string) (redirErr redirectionError, err error) {
-	parts := strings.Split(errStr, " ")
-	slot, err := strconv.ParseInt(parts[1], 10, 16)
-	if err != nil {
-		log.Printf("parse redir error: %s", err)
-		return redirErr, err
-	}
-
-	var rErrType redirErrorType
-
-	if parts[0] == askErrorStr {
-		rErrType = askError
-	} else if parts[0] == movedErrorStr {
-		rErrType = movedError
-	}
-
-	return redirectionError{
-		errType: rErrType,
-		slot:    uint16(slot),
-		host:    parts[2],
-	}, nil
 }
 
 func isWriteCommand(cmd string) bool {

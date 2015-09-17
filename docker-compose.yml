@@ -5,7 +5,8 @@ styx:
   volumes:
    - .:/go/src/styx
   links:
-   - redis
+   - redis1
+   - redis2
 redis1:
   image: redis
 redis2:
