@@ -37,5 +37,5 @@ To run the tests in a docker container:
 
 ```
 docker build -t styx .
-docker run styx cd /go/src/styx && make deps && make test
+docker run styx make deps && make test
 ```
