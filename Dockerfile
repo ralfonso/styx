@@ -1,5 +1,7 @@
 FROM golang
-RUN go get github.com/constabulary/gb/...
+EXPOSE 6389
+ADD . /go/src/styx
+WORKDIR /go/src/styx
 #ENV DEBUG=1
-#CMD /styx/bin/styx
-CMD /bin/bash
+ENV GO15VENDOREXPERIMENT=1
+CMD go get github.com/Masterminds/glide && glide install && go install styx && styx

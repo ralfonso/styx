@@ -51,6 +51,8 @@ type redirectionError struct {
 	host    string
 }
 
+// a map of our supported write commands.
+// used to determine if a command should be enqueue for replay
 var writeCommands = map[string]bool{
 	"PFADD": true,
 	"SET":   true,
@@ -67,6 +69,7 @@ func NewClusterClient(cluster StyxCluster, replayWorkerCount, redirectsAllowed i
 	}
 }
 
+// suuuuuuper basic load balancing. requires a read lock :|
 func chooseFewestConns(pools map[string]*redis.Pool) *redis.Pool {
 	leastActive := maxInt
 	var leastActivePool *redis.Pool = nil
@@ -82,11 +85,15 @@ func chooseFewestConns(pools map[string]*redis.Pool) *redis.Pool {
 	return leastActivePool
 }
 
+// redis cluster uses CRC16 + modulo to determine a key's slot
 func keySlot(key string) uint16 {
 	cs := crc16.Crc16([]byte(key))
 	return cs % redisSlotMax
 }
 
+// takes a Redis key and makes an effort to return a redis connection
+// to either the server that owns the key/slot, or the server
+// with the fewest active connections (which may result in a redir)
 func connByKey(key string, cluster *RedisCluster) redis.Conn {
 	slot := keySlot(key)
 
@@ -103,6 +110,7 @@ func connByKey(key string, cluster *RedisCluster) redis.Conn {
 	return pool.Get()
 }
 
+// handle a redirection response from redis
 func _parseRedirection(errStr string) (redirErr redirectionError, err error) {
 	parts := strings.Split(errStr, " ")
 	slot, err := strconv.ParseInt(parts[1], 10, 16)
@@ -132,6 +140,8 @@ func isWriteCommand(cmd string) bool {
 	return ok
 }
 
+// proxies a redis command to the local cluster and determines
+// eligibility for replay. enqueues if eligible
 func (c *ClusterClient) Do(cmd string, args ...interface{}) (interface{}, error) {
 	var key string
 	if len(args) > 0 {
@@ -158,7 +168,33 @@ func (c *ClusterClient) Do(cmd string, args ...interface{}) (interface{}, error)
 	return v, err
 }
 
-func parseRedirection(err error) (redirErr redirectionError, isRedir bool) {
+// handle a redirection response from redis
+func _parseRedirection(errStr string) (redirErr redirectionError, err error) {
+	parts := strings.Split(errStr, " ")
+	slot, err := strconv.ParseInt(parts[1], 10, 16)
+	if err != nil {
+		log.Printf("parse redir error: %s", err)
+		return redirErr, err
+	}
+
+	var rErrType redirErrorType
+
+	if parts[0] == askErrorStr {
+		rErrType = askError
+	} else if parts[0] == movedErrorStr {
+		rErrType = movedError
+	}
+
+	return redirectionError{
+		errType: rErrType,
+		slot:    uint16(slot),
+		host:    parts[2],
+	}, nil
+}
+
+// checks if a response is a redirection and hands the errstr
+// off to be parsed
+func parseIfRedir(err error) (redirErr redirectionError, isRedir bool) {
 	errStr := err.Error()
 	isRedir = errStr[0:3] == askErrorStr || errStr[0:5] == movedErrorStr
 	if isRedir {
@@ -172,10 +208,12 @@ func parseRedirection(err error) (redirErr redirectionError, isRedir bool) {
 	return redirErr, isRedir
 }
 
+// recursive execution method that decrements on every attempt. Tries to handle a number of
+// redis redirects without getting stuck in a loop
 func (c *ClusterClient) redirectingDo(redirectsAllowed int, conn redis.Conn, cluster *RedisCluster, cmd RedisCommand) (interface{}, error) {
 	v, err := conn.Do(cmd.cmd, cmd.args...)
 	if err != nil {
-		redirError, ok := parseRedirection(err)
+		redirError, ok := parseIfRedir(err)
 		if ok {
 			conn.Close()
 
@@ -191,7 +229,10 @@ func (c *ClusterClient) redirectingDo(redirectsAllowed int, conn redis.Conn, clu
 	return v, err
 }
 
+// On a redirect response, determines where the next attempt should go
 func (c *ClusterClient) handleRedirection(redirectsAllowed int, redirError redirectionError, cluster *RedisCluster, cmd RedisCommand) (interface{}, error) {
+	// XXX improve the delicate locking in this fn
+
 	// we only cache the slot location for a MOVED
 	if redirError.errType == movedError {
 		cluster.Lock()
@@ -207,7 +248,6 @@ func (c *ClusterClient) handleRedirection(redirectsAllowed int, redirError redir
 		return c.redirectingDo(redirectsAllowed, conn, cluster, cmd)
 	} else {
 		// we need to create a new pool
-		cluster.RUnlock()
 		cluster.Lock()
 		log.Printf("Creating pool for %s", redirError.host)
 		pool := createRedisPool(redirError.host, 500, 240, cluster.PoolSize, cluster.PoolSize)

@@ -20,6 +20,11 @@ func NewHandler(config HandlerConfig) *Handler {
 	}
 }
 
+// These are the custom handlers for each supported Redis
+// command. We only support PFADD, PFCOUNT, SET, and GET
+// these don't do anything special, just basic parsing of
+// args and responses. A little verbose..
+
 func (h *Handler) Pfadd(key string, values ...[]byte) (int, error) {
 	stringValues := make([]interface{}, len(values)+1)
 	stringValues[0] = key

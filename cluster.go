@@ -22,6 +22,7 @@ type RedisCluster struct {
 func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeout, redisMaxIdle, redisMaxActive int) *redis.Pool {
 	timeout := time.Duration(redisTimeout) * time.Millisecond
 
+	// TODO add a TestOnBorrow func that periodically checks the health of the connection
 	return &redis.Pool{
 		MaxIdle:     redisMaxIdle,
 		MaxActive:   redisMaxActive,
@@ -30,7 +31,6 @@ func createRedisPool(endpoint string, redisTimeout time.Duration, redisIdleTimeo
 		Dial: func() (redis.Conn, error) {
 			conn, err := redis.DialTimeout("tcp", endpoint, timeout, timeout, timeout)
 			if err != nil {
-				log.Print(err)
 				return nil, err
 			}
 			return conn, err
@@ -42,6 +42,7 @@ func NewRedisCluster(hosts []string, poolSize int) *RedisCluster {
 	pools := make(map[string]*redis.Pool)
 	for _, host := range hosts {
 		log.Printf("creating pool for %s", host)
+		// XXX remove hardcoded timeout values
 		pools[host] = createRedisPool(host, 500, 240, poolSize, poolSize)
 	}
 	return &RedisCluster{

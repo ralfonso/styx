@@ -2,6 +2,9 @@ package main
 
 import "log"
 
+// Reads from a channel, has a pool a redis worker clients,
+// replays commands to remote redis clusters. OK!
+
 type Replayer struct {
 	workerCount  int
 	workers      []replayWorker
